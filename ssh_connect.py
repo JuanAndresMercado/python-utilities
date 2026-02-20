@@ -1,122 +1,136 @@
 #!/usr/bin/env python3
-"""
-Programa para conectarse a servidores Linux mediante SSH
-con puertos específicos permitidos (1, 2 o 15).
-"""
 
+import argparse
 import subprocess
 import sys
 import os
+import json
+import socket
+from typing import List, Optional
+
+PROFILES_FILE = "ssh_profiles.json"
 
 
-def get_user_input() -> tuple[str, str, list[int]]:
-    """
-    Solicita al usuario el nombre de usuario, servidor y puerto.
-    
-    Returns:
-        tuple: (usuario, servidor, puertos)
-    """
-    # Solicitar usuario
-    usuario = input("Usuario: ").strip()
-    if not usuario:
-        print("Error: El usuario no puede estar vacío.")
+# ==========================================================
+# Utils
+# ==========================================================
+
+def puerto_disponible(servidor: str, puerto: int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((servidor, puerto), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def cargar_perfil(nombre: str):
+    if not os.path.exists(PROFILES_FILE):
+        print("No existe archivo de perfiles.")
         sys.exit(1)
-    
-    # Solicitar servidor
-    servidor = input("Servidor: ").strip()
-    if not servidor:
-        print("Error: El servidor no puede estar vacío.")
+
+    with open(PROFILES_FILE, "r") as f:
+        perfiles = json.load(f)
+
+    if nombre not in perfiles:
+        print(f"Perfil '{nombre}' no encontrado.")
         sys.exit(1)
-    
-    # Mostrar opciones de puerto y solicitar selección
-    puertos_permitidos = [1, 2, 15]
-    print("\nPuertos disponibles:")
-    for i, puerto in enumerate(puertos_permitidos, 1):
-        print(f"  {i}. Puerto {puerto}")
-    
-    while True:
-        try:
-            seleccion = input(
-                f"\nSeleccione uno o más puertos separados por coma (ej: 1,3): "
-            ).strip()
 
-            indices = [int(s.strip()) - 1 for s in seleccion.split(",") if s.strip()]
-            puertos_seleccionados = []
-
-            for indice in indices:
-                if 0 <= indice < len(puertos_permitidos):
-                    puertos_seleccionados.append(puertos_permitidos[indice])
-                else:
-                    raise ValueError
-
-            if not puertos_seleccionados:
-                raise ValueError
-
-            return usuario, servidor, puertos_seleccionados
-
-        except ValueError:
-            print(
-                f"Error: Seleccione números válidos entre 1 y {len(puertos_permitidos)}, separados por coma."
-            )
-        except KeyboardInterrupt:
-            print("\n\nOperación cancelada.")
-            sys.exit(0)
+    return perfiles[nombre]
 
 
-def connect_ssh(usuario: str, servidor: str, puertos: list[int]):
-    """
-    Establece una conexión SSH con el servidor usando el comando ssh del sistema.
-    
-    Args:
-        usuario: Nombre de usuario
-        servidor: Dirección del servidor
-        puertos: Lista de puertos SSH
-    """
-    print(f"\nConectando a {usuario}@{servidor} en múltiples puertos...")
-    print("(Se le pedirá la contraseña para cada conexión)\n")
+# ==========================================================
+# Core SSH
+# ==========================================================
+
+def ejecutar_conexiones(
+    usuario: str,
+    servidor: str,
+    puertos: List[int],
+    key_path: Optional[str],
+    paralelo: bool,
+):
+    print("\n⚠️  Nota técnica:")
+    print("Cada conexión SSH utiliza UN puerto TCP.")
+    print("No es posible múltiples puertos en una sola sesión.\n")
 
     procesos = []
 
     for puerto in puertos:
-        print(f"Iniciando conexión en puerto {puerto}...")
-        comando_ssh = [
-            "ssh",
-            "-p",
-            str(puerto),
-            f"{usuario}@{servidor}",
-        ]
 
-        try:
-            # Usamos Popen para permitir múltiples sesiones simultáneas
-            proceso = subprocess.Popen(comando_ssh)
+        print(f"Verificando puerto {puerto}...")
+
+        if not puerto_disponible(servidor, puerto):
+            print(f"Puerto {puerto} no disponible. Se omite.")
+            continue
+
+        comando = ["ssh", "-p", str(puerto)]
+
+        if key_path:
+            comando.extend(["-i", key_path])
+
+        comando.append(f"{usuario}@{servidor}")
+
+        print(f"Conectando a {servidor}:{puerto}")
+
+        if paralelo:
+            proceso = subprocess.Popen(comando)
             procesos.append(proceso)
-        except FileNotFoundError:
-            print("\nError: El comando 'ssh' no está disponible en el sistema.")
-            print("Por favor, instale OpenSSH o use una alternativa.")
-            sys.exit(1)
+        else:
+            subprocess.run(comando)
 
-    # Esperar a que todos los procesos terminen
-    try:
-        for proceso in procesos:
-            proceso.wait()
-    except KeyboardInterrupt:
-        print("\n\nConexiones canceladas.")
-        for proceso in procesos:
-            proceso.terminate()
-        sys.exit(0)
+    if paralelo:
+        try:
+            for p in procesos:
+                p.wait()
+        except KeyboardInterrupt:
+            print("\nCancelando conexiones...")
+            for p in procesos:
+                p.terminate()
+            sys.exit(0)
 
+
+# ==========================================================
+# CLI
+# ==========================================================
 
 def main():
-    """Función principal del programa."""
-    print("="*50)
-    print("Cliente SSH - Conexión a servidor Linux")
-    print("="*50)
-    
-    # Obtener datos del usuario
-    usuario, servidor, puerto = get_user_input()
-    
-    # Conectar al servidor
-    connect_ssh(usuario, servidor, puerto)
+    parser = argparse.ArgumentParser(
+        prog="andres-ssh",
+        description="Cliente SSH avanzado multi-puerto",
+    )
+
+    parser.add_argument("--profile", help="Nombre del perfil")
+    parser.add_argument("--parallel", action="store_true", help="Ejecutar en paralelo")
+
+    parser.add_argument("--user", help="Usuario SSH")
+    parser.add_argument("--host", help="Servidor")
+    parser.add_argument("--ports", help="Puertos separados por coma")
+    parser.add_argument("--key", help="Ruta a llave privada")
+
+    args = parser.parse_args()
+
+    if args.profile:
+        perfil = cargar_perfil(args.profile)
+        usuario = perfil["usuario"]
+        servidor = perfil["servidor"]
+        puertos = perfil["puertos"]
+        key_path = perfil.get("key_path")
+    else:
+        if not all([args.user, args.host, args.ports]):
+            parser.error("Debe usar --profile o especificar --user --host --ports")
+
+        usuario = args.user
+        servidor = args.host
+        puertos = [int(p.strip()) for p in args.ports.split(",")]
+        key_path = args.key
+
+    ejecutar_conexiones(
+        usuario,
+        servidor,
+        puertos,
+        key_path,
+        args.parallel,
+    )
 
 
 if __name__ == "__main__":
