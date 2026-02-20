@@ -9,12 +9,12 @@ import sys
 import os
 
 
-def get_user_input() -> tuple[str, str, int]:
+def get_user_input() -> tuple[str, str, list[int]]:
     """
     Solicita al usuario el nombre de usuario, servidor y puerto.
     
     Returns:
-        tuple: (usuario, servidor, puerto)
+        tuple: (usuario, servidor, puertos)
     """
     # Solicitar usuario
     usuario = input("Usuario: ").strip()
@@ -36,52 +36,73 @@ def get_user_input() -> tuple[str, str, int]:
     
     while True:
         try:
-            seleccion = input(f"\nSeleccione el puerto (1-{len(puertos_permitidos)}): ").strip()
-            indice = int(seleccion) - 1
-            if 0 <= indice < len(puertos_permitidos):
-                puerto = puertos_permitidos[indice]
-                return usuario, servidor, puerto
-            else:
-                print(f"Error: Por favor seleccione un número entre 1 y {len(puertos_permitidos)}.")
+            seleccion = input(
+                f"\nSeleccione uno o más puertos separados por coma (ej: 1,3): "
+            ).strip()
+
+            indices = [int(s.strip()) - 1 for s in seleccion.split(",") if s.strip()]
+            puertos_seleccionados = []
+
+            for indice in indices:
+                if 0 <= indice < len(puertos_permitidos):
+                    puertos_seleccionados.append(puertos_permitidos[indice])
+                else:
+                    raise ValueError
+
+            if not puertos_seleccionados:
+                raise ValueError
+
+            return usuario, servidor, puertos_seleccionados
+
         except ValueError:
-            print("Error: Por favor ingrese un número válido.")
+            print(
+                f"Error: Seleccione números válidos entre 1 y {len(puertos_permitidos)}, separados por coma."
+            )
         except KeyboardInterrupt:
             print("\n\nOperación cancelada.")
             sys.exit(0)
 
 
-def connect_ssh(usuario: str, servidor: str, puerto: int):
+def connect_ssh(usuario: str, servidor: str, puertos: list[int]):
     """
     Establece una conexión SSH con el servidor usando el comando ssh del sistema.
     
     Args:
         usuario: Nombre de usuario
         servidor: Dirección del servidor
-        puerto: Puerto SSH
+        puertos: Lista de puertos SSH
     """
-    print(f"\nConectando a {usuario}@{servidor}:{puerto}...")
-    print("(Se le pedirá la contraseña cuando se establezca la conexión)\n")
-    
-    # Construir comando SSH
-    comando_ssh = [
-        'ssh',
-        '-p', str(puerto),
-        f'{usuario}@{servidor}'
-    ]
-    
+    print(f"\nConectando a {usuario}@{servidor} en múltiples puertos...")
+    print("(Se le pedirá la contraseña para cada conexión)\n")
+
+    procesos = []
+
+    for puerto in puertos:
+        print(f"Iniciando conexión en puerto {puerto}...")
+        comando_ssh = [
+            "ssh",
+            "-p",
+            str(puerto),
+            f"{usuario}@{servidor}",
+        ]
+
+        try:
+            # Usamos Popen para permitir múltiples sesiones simultáneas
+            proceso = subprocess.Popen(comando_ssh)
+            procesos.append(proceso)
+        except FileNotFoundError:
+            print("\nError: El comando 'ssh' no está disponible en el sistema.")
+            print("Por favor, instale OpenSSH o use una alternativa.")
+            sys.exit(1)
+
+    # Esperar a que todos los procesos terminen
     try:
-        # Ejecutar SSH en modo interactivo (conecta directamente al terminal)
-        # Esto permite una experiencia SSH completa y nativa
-        subprocess.run(comando_ssh, check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"\nError al conectar: El comando SSH falló con código {e.returncode}")
-        sys.exit(1)
-    except FileNotFoundError:
-        print("\nError: El comando 'ssh' no está disponible en el sistema.")
-        print("Por favor, instale OpenSSH o use una alternativa.")
-        sys.exit(1)
+        for proceso in procesos:
+            proceso.wait()
     except KeyboardInterrupt:
-        print("\n\nConexión cancelada.")
+        print("\n\nConexiones canceladas.")
+        for proceso in procesos:
+            proceso.terminate()
         sys.exit(0)
 
 
